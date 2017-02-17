@@ -2,8 +2,6 @@ package main
 
 import (
 	"net/http"
-
-	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -69,7 +67,7 @@ func init() {
 }
 
 type client struct {
-	Ch     chan string
+	Ch     chan interface{}
 	Player Person
 }
 
@@ -105,6 +103,11 @@ var wsupgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
+type register struct{
+    RoomNum string `json:"roomNum"`
+    PlayerName string `json:"playerName"`
+}
+
 func wshandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := wsupgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -112,29 +115,29 @@ func wshandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, p, err := conn.ReadMessage()
+    var reg register
+	err = conn.ReadJSON(&reg)
 	if err != nil {
+        panic(err)
 		conn.Close()
 		return
 	}
-	roomNum := string(p)
 
-	ch := make(chan string)
-	cli := client{
-		Ch: ch,
-		Player: Person{
-			Name:   RandStringRunes(8),
-			Avatar: "http://xxx.xxx.xxx/xxxxxx",
-		},
-	}
-
-	room, ok := Rooms[roomNum]
+	room, ok := Rooms[reg.RoomNum]
 	if !ok {
 		conn.WriteJSON("wrong room number!")
 		conn.Close()
 		return
 	}
 
+	ch := make(chan interface{})
+	cli := client{
+		Ch: ch,
+		Player: Person{
+			Name:   reg.PlayerName,
+			Avatar: "http://xxx.xxx.xxx/xxxxxx",
+		},
+	}
 	room.Entering <- cli
 
 	go connWriter(conn, cli.Ch)
@@ -149,7 +152,7 @@ func wshandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func connWriter(conn *websocket.Conn, clientChan <-chan string) {
+func connWriter(conn *websocket.Conn, clientChan <-chan interface{}) {
 	for msg := range clientChan {
 		conn.WriteJSON(msg)
 	}
@@ -187,10 +190,10 @@ func (room *Room) nextTurn() {
 	room.State.Tick = 10
 }
 
-func (room *Room) broadcast(msg string) {
-	fmt.Println("broadcast:" + msg)
+func (room *Room) broadcast(event interface{}) {
+	fmt.Printf("broadcast:%v\n", event)
 	for cli := range room.Clients {
-		cli.Ch <- msg
+		cli.Ch <- event
 	}
 }
 
@@ -241,8 +244,7 @@ func main() {
 							Tick:      room.State.Tick,
 							RoomState: room.State,
 						}
-						jsonBytes, _ := json.Marshal(event)
-						room.broadcast(string(jsonBytes))
+						room.broadcast(event)
 					}
 				}
 
@@ -258,16 +260,14 @@ func main() {
 							Who:       action.Who,
 							RoomState: room.State,
 						}
-						jsonBytes, _ := json.Marshal(event)
-						room.broadcast(string(jsonBytes))
+						room.broadcast(event)
 					} else {
 						event := LoseAndNextRoundEvent{
 							Type:      "loseAndNextRound",
 							Who:       action.Who,
 							RoomState: room.State,
 						}
-						jsonBytes, _ := json.Marshal(event)
-						room.broadcast(string(jsonBytes))
+						room.broadcast(event)
 					}
 				} else {
 					room.nextTurn()
@@ -275,8 +275,7 @@ func main() {
 						Type:      "nextTurn",
 						RoomState: room.State,
 					}
-					jsonBytes, _ := json.Marshal(event)
-					room.broadcast(string(jsonBytes))
+					room.broadcast(event)
 				}
 
 			case cli := <-room.Entering:
@@ -302,12 +301,10 @@ func main() {
 					Type:      "game on",
 					RoomState: room.State,
 				}
-				jsonBytes, _ := json.Marshal(event)
-				room.broadcast(string(jsonBytes))
+				room.broadcast(event)
 				if gameOn {
 					room.nextTurn()
-					jsonBytes, _ := json.Marshal(gameOnEvent)
-					room.broadcast(string(jsonBytes))
+					room.broadcast(gameOnEvent)
 				}
 
 			case cli := <-room.Leaving:
@@ -320,8 +317,7 @@ func main() {
 					RoomState: room.State,
 				}
 
-				jsonBytes, _ := json.Marshal(event)
-				room.broadcast(string(jsonBytes))
+				room.broadcast(event)
 
 				if len(room.State.PlayerList) == 0 && len(room.State.AuditorList) == 0 {
 					room.Begin = false
